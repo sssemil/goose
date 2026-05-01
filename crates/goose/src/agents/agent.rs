@@ -24,7 +24,9 @@ use crate::agents::extension_manager::{
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_extensions::summon::discover_filesystem_sources;
 use crate::agents::platform_extensions::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
-use crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME;
+use crate::agents::platform_tools::{
+    PLATFORM_MANAGE_SCHEDULE_TOOL_NAME, PLATFORM_THINK_TOOL_NAME,
+};
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::types::{FrontendTool, SessionConfig, SharedProvider, ToolResultReceiver};
@@ -601,6 +603,16 @@ impl Agent {
             return (request_id, Ok(ToolCallResult::from(wrapped_result)));
         }
 
+        if tool_call.name == PLATFORM_THINK_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self.handle_think(arguments).await;
+            let wrapped_result = result.map(CallToolResult::success);
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
@@ -950,6 +962,10 @@ impl Agent {
             && self.config.scheduler_service.is_some()
         {
             prefixed_tools.push(platform_tools::manage_schedule_tool());
+        }
+
+        if extension_name.is_none() || extension_name.as_deref() == Some("platform") {
+            prefixed_tools.push(platform_tools::think_tool());
         }
 
         if extension_name.is_none() {

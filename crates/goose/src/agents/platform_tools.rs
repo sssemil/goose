@@ -2,6 +2,31 @@ use indoc::indoc;
 use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule";
+pub const PLATFORM_THINK_TOOL_NAME: &str = "platform__think";
+
+pub fn think_tool() -> Tool {
+    Tool::new(
+        PLATFORM_THINK_TOOL_NAME.to_string(),
+        "Use the tool to think about something. It will not obtain new information or change the database, but just append the thought to the log. Use it when complex reasoning or some cache memory is needed.".to_string(),
+        object!({
+            "type": "object",
+            "required": ["thought"],
+            "properties": {
+                "thought": {
+                    "type": "string",
+                    "description": "A thought to think about."
+                }
+            }
+        }),
+    )
+    .annotate(
+        ToolAnnotations::with_title("Think".to_string())
+            .read_only(true)
+            .destructive(false)
+            .idempotent(true)
+            .open_world(false),
+    )
+}
 
 pub fn manage_schedule_tool() -> Tool {
     Tool::new(

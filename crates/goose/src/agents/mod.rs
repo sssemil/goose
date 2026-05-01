@@ -14,6 +14,7 @@ pub mod prompt_manager;
 pub mod reply_parts;
 pub mod retry;
 mod schedule_tool;
+mod think_tool;
 pub mod subagent_execution_tool;
 pub(crate) mod subagent_handler;
 pub(crate) mod subagent_task_config;
