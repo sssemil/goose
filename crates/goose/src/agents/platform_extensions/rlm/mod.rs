@@ -10,6 +10,8 @@
 //! - `rlm__store`
 //! - `rlm__retrieve`
 //! - `rlm__list_keys`
+//! - `rlm__load_file`
+//! - `rlm__load_directory`
 //!
 //! Termination is handled via the existing `final_output` pathway, so no
 //! `rlm__finalize` is needed — the model just returns its final text.
@@ -126,6 +128,24 @@ struct ListContextsParams {}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct ListKeysParams {}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct LoadFileParams {
+    /// Filesystem path of the file to load.
+    path: String,
+    /// Name to register the context under (defaults to the file stem).
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct LoadDirectoryParams {
+    /// Filesystem path of the directory to load (recursive, gitignore-aware).
+    path: String,
+    /// Name to register the context under (defaults to the directory basename).
+    #[serde(default)]
+    name: Option<String>,
+}
 
 pub struct RlmClient {
     info: InitializeResult,
@@ -369,6 +389,61 @@ impl RlmClient {
         Ok(())
     }
 
+    async fn handle_load_file(&self, args: Option<JsonObject>) -> Result<Vec<Content>, String> {
+        let p: LoadFileParams = Self::parse_args(args)?;
+        let path = std::path::PathBuf::from(&p.path);
+        if !path.is_file() {
+            return Err(format!("not a file: {}", p.path));
+        }
+        let name = p.name.unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("context")
+                .to_string()
+        });
+        let ctx = self
+            .store()
+            .load_file(&path, &name)
+            .map_err(|e| format!("load_file failed: {e}"))?;
+        let s = ctx.summary();
+        if let Err(e) = self.persist_snapshot().await {
+            tracing::warn!("rlm: failed to persist after load_file: {}", e);
+        }
+        Ok(vec![Content::text(format!(
+            "loaded '{}' ({} chunks, ~{} tokens)",
+            s.name, s.n_chunks, s.total_tokens
+        ))])
+    }
+
+    async fn handle_load_directory(
+        &self,
+        args: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let p: LoadDirectoryParams = Self::parse_args(args)?;
+        let path = std::path::PathBuf::from(&p.path);
+        if !path.is_dir() {
+            return Err(format!("not a directory: {}", p.path));
+        }
+        let name = p.name.unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("context")
+                .to_string()
+        });
+        let ctx = self
+            .store()
+            .load_directory(&path, &name)
+            .map_err(|e| format!("load_directory failed: {e}"))?;
+        let s = ctx.summary();
+        if let Err(e) = self.persist_snapshot().await {
+            tracing::warn!("rlm: failed to persist after load_directory: {}", e);
+        }
+        Ok(vec![Content::text(format!(
+            "loaded '{}' ({} chunks, ~{} tokens)",
+            s.name, s.n_chunks, s.total_tokens
+        ))])
+    }
+
     async fn handle_retrieve(&self, args: Option<JsonObject>) -> Result<Vec<Content>, String> {
         let p: RetrieveParams = Self::parse_args(args)?;
         let v = self
@@ -474,6 +549,30 @@ impl RlmClient {
             .annotate(ToolAnnotations::from_raw(
                 Some("RLM List Keys".into()),
                 Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "load_file",
+                "Ingest a single file as a new RLM context (chunked + BM25-indexed). Use when the user asks about content not pre-loaded via --context.",
+                s(serde_json::to_value(schema_for!(LoadFileParams)).unwrap()),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("RLM Load File".into()),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+            )),
+            Tool::new(
+                "load_directory",
+                "Ingest a directory recursively as a new RLM context (gitignore-aware, skips binaries). Use when the user asks about a codebase or doc tree not pre-loaded via --context.",
+                s(serde_json::to_value(schema_for!(LoadDirectoryParams)).unwrap()),
+            )
+            .annotate(ToolAnnotations::from_raw(
+                Some("RLM Load Directory".into()),
+                Some(false),
                 Some(false),
                 Some(false),
                 Some(false),
@@ -681,6 +780,8 @@ impl McpClientTrait for RlmClient {
             "store" => self.handle_store(arguments).await,
             "retrieve" => self.handle_retrieve(arguments).await,
             "list_keys" => self.handle_list_keys().await,
+            "load_file" => self.handle_load_file(arguments).await,
+            "load_directory" => self.handle_load_directory(arguments).await,
             other => Err(format!("unknown tool: {other}")),
         };
         match result {
@@ -848,6 +949,89 @@ mod tests {
             .await
             .unwrap();
         assert!(extract_text(&r).contains("\"n\":3"));
+    }
+
+    #[tokio::test]
+    async fn load_file_tool_round_trip() {
+        let store = Arc::new(RlmStore::new());
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        f.write_all(b"# H\nthe sentinel value is QQQ_42\n")
+            .unwrap();
+        let client = RlmClient::new(ctx_with_store(store.clone())).unwrap();
+        // No contexts loaded yet.
+        assert!(store.list_contexts().is_empty());
+
+        let r = client
+            .call_tool(
+                &ToolCallContext::new("s".into(), None, None),
+                "load_file",
+                Some(
+                    serde_json::json!({"path": f.path().to_str().unwrap(), "name": "doc"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(extract_text(&r).contains("loaded 'doc'"));
+        // Now context is queryable.
+        assert_eq!(store.list_contexts().len(), 1);
+        let hits = store
+            .get("doc")
+            .unwrap()
+            .search("QQQ_42", 5, SearchMode::Substring);
+        assert!(!hits.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_directory_tool_skips_binaries() {
+        let store = Arc::new(RlmStore::new());
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.md"), "# H\nfoo bar baz\n").unwrap();
+        std::fs::write(dir.path().join("b.png"), b"\x89PNG\r\n").unwrap();
+        let client = RlmClient::new(ctx_with_store(store.clone())).unwrap();
+
+        let r = client
+            .call_tool(
+                &ToolCallContext::new("s".into(), None, None),
+                "load_directory",
+                Some(
+                    serde_json::json!({"path": dir.path().to_str().unwrap(), "name": "tree"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(extract_text(&r).contains("loaded 'tree'"));
+        let ctx = store.get("tree").unwrap();
+        assert!(!ctx.chunks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn load_file_tool_rejects_directory() {
+        let store = Arc::new(RlmStore::new());
+        let dir = tempfile::tempdir().unwrap();
+        let client = RlmClient::new(ctx_with_store(store)).unwrap();
+        let r = client
+            .call_tool(
+                &ToolCallContext::new("s".into(), None, None),
+                "load_file",
+                Some(
+                    serde_json::json!({"path": dir.path().to_str().unwrap()})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(extract_text(&r).contains("not a file"));
     }
 
     #[tokio::test]
