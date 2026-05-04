@@ -694,6 +694,7 @@ impl ExtensionManager {
                 extension_manager: None,
                 session_manager,
                 session: None,
+                rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
             },
             provider,
             tools_cache: Mutex::new(None),
@@ -718,6 +719,12 @@ impl ExtensionManager {
 
     pub fn get_context(&self) -> &PlatformExtensionContext {
         &self.context
+    }
+
+    /// Per-session [`RlmStore`](crate::agents::rlm::RlmStore) handle. The CLI
+    /// uses this to pre-load contexts before the first turn when `--rlm` is set.
+    pub fn rlm_store(&self) -> Arc<crate::agents::rlm::RlmStore> {
+        self.context.rlm_store.clone()
     }
 
     pub fn get_provider(&self) -> &SharedProvider {

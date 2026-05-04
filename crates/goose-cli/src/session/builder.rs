@@ -116,6 +116,9 @@ pub struct SessionBuilderConfig {
     pub output_format: String,
     /// Docker container to run stdio extensions inside
     pub container: Option<Container>,
+    /// RLM contexts to pre-load into the per-session store. Each entry is
+    /// `PATH` or `PATH:NAME`. Files and directories both supported.
+    pub rlm_contexts: Vec<String>,
 }
 
 /// Manual implementation of Default to ensure proper initialization of output_format
@@ -143,6 +146,7 @@ impl Default for SessionBuilderConfig {
             quiet: false,
             output_format: "text".to_string(),
             container: None,
+            rlm_contexts: Vec::new(),
         }
     }
 }
@@ -710,6 +714,51 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         &session_id,
     )
     .await;
+
+    // Pre-load --context inputs into the per-session RLM store.
+    if !session_config.rlm_contexts.is_empty() {
+        let store = agent_ptr.extension_manager.rlm_store();
+        for spec in &session_config.rlm_contexts {
+            let (path_part, name_part) = match spec.rsplit_once(':') {
+                Some((p, n)) if !n.is_empty() && !n.contains('/') => (p, Some(n.to_string())),
+                _ => (spec.as_str(), None),
+            };
+            let path = std::path::PathBuf::from(path_part);
+            let name = name_part.unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("context")
+                    .to_string()
+            });
+            let result = if path.is_dir() {
+                store.load_directory(&path, &name)
+            } else if path.is_file() {
+                store.load_file(&path, &name)
+            } else {
+                Err(anyhow::anyhow!(
+                    "--context path does not exist: {}",
+                    path.display()
+                ))
+            };
+            match result {
+                Ok(ctx) => {
+                    let s = ctx.summary();
+                    output::render_text(
+                        &format!(
+                            "rlm: loaded context '{}' ({} chunks, ~{} tokens, source {})",
+                            s.name, s.n_chunks, s.total_tokens, s.source
+                        ),
+                        None,
+                        false,
+                    );
+                }
+                Err(e) => {
+                    output::render_error(&format!("Failed to load --context {}: {}", spec, e));
+                    process::exit(1);
+                }
+            }
+        }
+    }
 
     let edit_mode = config
         .get_param::<String>("EDIT_MODE")

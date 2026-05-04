@@ -284,6 +284,7 @@ mod tests {
             extension_manager: None,
             session_manager: Arc::new(crate::session::SessionManager::instance()),
             session: Some(session),
+            rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
         })
         .unwrap();
 
@@ -310,6 +311,7 @@ mod tests {
             extension_manager: None,
             session_manager: Arc::new(crate::session::SessionManager::instance()),
             session: None,
+            rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
         })
         .unwrap();
 

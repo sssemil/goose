@@ -435,6 +435,7 @@ mod tests {
             extension_manager: None,
             session_manager,
             session: Some(Arc::new(session)),
+            rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
         };
 
         let mut extensions: Vec<ExtensionInfo> = PLATFORM_EXTENSIONS

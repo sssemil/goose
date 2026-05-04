@@ -238,6 +238,7 @@ mod tests {
             extension_manager: None,
             session_manager: Arc::new(SessionManager::new(data_dir)),
             session: None,
+            rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
         }
     }
 

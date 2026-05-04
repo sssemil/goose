@@ -177,6 +177,23 @@ pub struct ExtensionOptions {
         help = "Don't load your default extensions, only use CLI-specified extensions"
     )]
     pub no_profile: bool,
+
+    /// Enable Recursive Language Model mode
+    #[arg(
+        long = "rlm",
+        help = "Enable Recursive Language Model mode (loads the rlm extension and pre-loads --context inputs into the per-session store)",
+        long_help = "Recursive Language Model mode keeps long inputs OUT of the prompt — they live in a per-session store accessed via rlm__* tools (search, get_chunk, sub_query, store, retrieve). Pair with one or more --context flags to pre-load files or directories. See arXiv:2512.24601."
+    )]
+    pub rlm: bool,
+
+    /// Pre-load a file or directory into the RLM store
+    #[arg(
+        long = "context",
+        value_name = "PATH[:NAME]",
+        help = "Pre-load a file or directory into the RLM store (repeatable). Optional :NAME suffix overrides the context name (default: filename / directory basename).",
+        action = clap::ArgAction::Append
+    )]
+    pub contexts: Vec<String>,
 }
 
 /// Input source and recipe options for the run command
@@ -1214,6 +1231,11 @@ async fn handle_interactive_session(
         }
     }
 
+    let mut interactive_builtins = extension_opts.builtins.clone();
+    if extension_opts.rlm && !interactive_builtins.iter().any(|b| b == "rlm") {
+        interactive_builtins.push("rlm".to_string());
+    }
+
     let mut session: crate::CliSession = build_session(SessionBuilderConfig {
         session_id,
         resume,
@@ -1221,7 +1243,7 @@ async fn handle_interactive_session(
         no_session: false,
         extensions: extension_opts.extensions,
         streamable_http_extensions: extension_opts.streamable_http_extensions,
-        builtins: extension_opts.builtins,
+        builtins: interactive_builtins,
         no_profile: extension_opts.no_profile,
         recipe: None,
         additional_system_prompt: None,
@@ -1235,6 +1257,7 @@ async fn handle_interactive_session(
         quiet: false,
         output_format: "text".to_string(),
         container: session_opts.container.map(Container::new),
+        rlm_contexts: extension_opts.contexts.clone(),
     })
     .await;
 
@@ -1426,6 +1449,11 @@ async fn handle_run_command(
     )
     .await?;
 
+    let mut builtins = extension_opts.builtins.clone();
+    if extension_opts.rlm && !builtins.iter().any(|b| b == "rlm") {
+        builtins.push("rlm".to_string());
+    }
+
     let mut session = build_session(SessionBuilderConfig {
         session_id,
         resume: run_behavior.resume,
@@ -1433,7 +1461,7 @@ async fn handle_run_command(
         no_session: run_behavior.no_session,
         extensions: extension_opts.extensions,
         streamable_http_extensions: extension_opts.streamable_http_extensions,
-        builtins: extension_opts.builtins,
+        builtins,
         no_profile: extension_opts.no_profile,
         recipe: recipe.clone(),
         additional_system_prompt: input_config.additional_system_prompt,
@@ -1447,6 +1475,7 @@ async fn handle_run_command(
         quiet: output_opts.quiet,
         output_format: output_opts.output_format,
         container: session_opts.container.map(Container::new),
+        rlm_contexts: extension_opts.contexts,
     })
     .await;
 
@@ -1740,6 +1769,7 @@ async fn handle_default_session() -> Result<()> {
         quiet: false,
         output_format: "text".to_string(),
         container: None,
+        rlm_contexts: Vec::new(),
     })
     .await;
     session.interactive(None).await

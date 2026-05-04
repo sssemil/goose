@@ -145,6 +145,7 @@ tokio-stream = { workspace = true, features = ["io-util"] }
 tempfile = { workspace = true }
 dashmap = "6.1"
 ahash = "0.8"
+bm25 = { version = "2.3", default-features = false, features = ["default_tokenizer", "parallelism"] }
 tokio-util = { workspace = true, features = ["compat"] }
 agent-client-protocol-schema = { workspace = true }
 sacp = { workspace = true, features = ["unstable"] }

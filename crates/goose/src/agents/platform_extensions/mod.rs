@@ -6,6 +6,7 @@ pub mod code_execution;
 pub mod developer;
 pub mod ext_manager;
 pub mod orchestrator;
+pub mod rlm;
 pub mod summarize;
 pub mod summon;
 pub mod todo;
@@ -202,6 +203,20 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             },
         );
 
+        map.insert(
+            rlm::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: rlm::EXTENSION_NAME,
+                display_name: "Recursive Language Model",
+                description:
+                    "RLM tools: keep long context outside the prompt and access it via search / get_chunk / sub_query / store / retrieve.",
+                default_enabled: false,
+                unprefixed_tools: false,
+                hidden: false,
+                client_factory: |ctx| Box::new(rlm::RlmClient::new(ctx).unwrap()),
+            },
+        );
+
         map
     },
 );
@@ -212,6 +227,9 @@ pub struct PlatformExtensionContext {
         Option<std::sync::Weak<crate::agents::extension_manager::ExtensionManager>>,
     pub session_manager: std::sync::Arc<crate::session::SessionManager>,
     pub session: Option<std::sync::Arc<Session>>,
+    /// Per-session Recursive Language Model store. Always present; empty
+    /// unless the user enabled RLM mode (`--rlm` / recipe `rlm:` block).
+    pub rlm_store: std::sync::Arc<crate::agents::rlm::RlmStore>,
 }
 
 impl PlatformExtensionContext {
