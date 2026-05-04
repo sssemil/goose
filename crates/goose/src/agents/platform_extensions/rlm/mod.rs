@@ -145,16 +145,26 @@ impl RlmClient {
                 live OUTSIDE your message history, in named contexts. NEVER ask the user
                 to paste content already loaded in a context — use the rlm__* tools.
 
+                Loaded contexts will be reported to you in your top-of-mind line each
+                turn (look for "RLM contexts:"). Use those EXACT names in the `context`
+                argument to rlm__search and rlm__get_chunk — do not guess.
+
                 Workflow for a long-context task:
-                1. `rlm__list_contexts` — see what's loaded.
-                2. `rlm__search` — find relevant chunks (BM25 by default).
-                3. `rlm__get_chunk` — pull only what you need.
-                4. `rlm__sub_query` — delegate per-chunk analysis to a fresh sub-LLM call.
-                5. `rlm__store` / `rlm__retrieve` — persist intermediate findings between turns.
+                1. Read the "RLM contexts:" line in your top-of-mind to see what's loaded.
+                2. `rlm__search(context="<name>", query="...")` — find relevant chunks
+                   (BM25 by default; use mode="substring" for literal text, "regex" for
+                   patterns). Returns top-k matches with previews and chunk_ids.
+                3. `rlm__get_chunk(context="<name>", chunk_id="...")` — pull only what
+                   you need (capped at max_chars).
+                4. `rlm__sub_query(prompt="...", context_refs=[{context, chunk_ids}])` —
+                   delegate per-chunk analysis to a fresh sub-LLM call. The sub-LLM
+                   never sees your conversation; it gets only the slices you reference.
+                5. `rlm__store(key, value)` / `rlm__retrieve(key)` — persist intermediate
+                   findings between turns (survives `goose session resume`).
                 6. Reply with your final answer (no special finalize tool — just answer).
 
-                Keep your message history small: most tool responses are deliberately
-                truncated. Full content stays in the store and you can re-fetch by id.
+                Keep your message history small: every rlm__* response is capped at
+                ~2k chars. Full content stays in the store; re-fetch by id when needed.
                 "#}
                 .to_string(),
             );
@@ -683,6 +693,25 @@ impl McpClientTrait for RlmClient {
 
     fn get_info(&self) -> Option<&InitializeResult> {
         Some(&self.info)
+    }
+
+    async fn get_moim(&self, _session_id: &str) -> Option<String> {
+        let summaries = self.store().list_contexts();
+        if summaries.is_empty() {
+            return None;
+        }
+        let mut s = String::from("RLM contexts: ");
+        for (i, c) in summaries.iter().enumerate() {
+            if i > 0 {
+                s.push_str(", ");
+            }
+            s.push_str(&format!(
+                "{} ({} chunks, ~{} tokens)",
+                c.name, c.n_chunks, c.total_tokens
+            ));
+        }
+        s.push_str(". Use these exact names with rlm__search / rlm__get_chunk.");
+        Some(s)
     }
 }
 
