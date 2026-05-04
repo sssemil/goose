@@ -38,22 +38,28 @@ fi
 declare -a QUESTIONS=(
   # Q0 needle (simple)
   "What is the numeric value of the constant LARGE_TEXT_THRESHOLD in the goose codebase? Reply with just the number."
-  # Q1 needle (recent code)
-  "What is the value of DEFAULT_MAX_DEPTH for the RLM module? Reply with just the number."
-  # Q2 cross-file aggregation: which files have a #[cfg(test)] block?
+  # Q1 cross-file aggregation: which files have a #[cfg(test)] block?
   # Ground truth: count files in agents/ with cfg(test)
   "How many .rs files under crates/goose/src/agents/ contain a '#[cfg(test)]' attribute? Reply with just the number."
-  # Q3 multi-chunk synthesis: list every platform extension and one-line description
+  # Q2 multi-chunk synthesis: list every platform extension and one-line description
   "List EVERY platform extension registered in PLATFORM_EXTENSIONS in crates/goose/src/agents/platform_extensions/mod.rs. Reply with one line per extension as 'name: <description>'. Order does not matter. Do not omit any."
+  # Q3 SEMANTIC per-file summarization — RLM-shaped task. Forces the model
+  # to read EVERY platform extension file and produce a per-file summary
+  # that can't be answered by a single grep. Shell mode either has to cat
+  # a lot (eats the prompt window) or do many separate calls; RLM can
+  # sub_query per chunk and aggregate short answers.
+  "For each platform extension under crates/goose/src/agents/platform_extensions/, write ONE concise sentence describing what kind of capability that extension provides (file-system operations, code analysis, scheduling, memory, etc.). Output one line per extension as 'name: <one sentence>'. Cover every extension you can find."
 )
 # Ground truths (computed offline by grep — see scripts/bench_rlm.sh comment).
 declare -a EXPECTED=(
   "200_?000"
-  "\\b2\\b"
   # 25 files have #[cfg(test)] under agents/ at time of writing — accept
   # 20-30 as "got the order of magnitude right".
-  "\\b2[0-9]\\b|\\b3[0-2]\\b"
+  "(?<![0-9])2[0-9](?![0-9])|(?<![0-9])3[0-2](?![0-9])"
   # Must mention every registered platform extension at least once.
+  "all:analyze,todo,apps,chatrecall,extensionmanager,summon,summarize,developer,orchestrator,tom,skills,rlm"
+  # Q3 grading: every extension must appear in the answer with some text
+  # that distinguishes them. Re-use the all: matcher.
   "all:analyze,todo,apps,chatrecall,extensionmanager,summon,summarize,developer,orchestrator,tom,skills,rlm"
 )
 
@@ -70,35 +76,32 @@ echo "binary:    $GOOSE_BIN"
 echo "model:     $($GOOSE_BIN info 2>/dev/null | grep -i model | head -1 || echo '?')"
 echo
 
-# Per-mode runner. Captures stdout + wall time.
+# Per-mode runner. Captures stdout + wall time. We dump TWO files per run:
+# - $out_file        — text output (used for grading via grep)
+# - $out_file.json   — JSON output (used to extract total_tokens)
+# Sadly goose doesn't render text + return JSON in one go, so we run twice.
 # When ISOLATE=1, baseline gets --no-profile + developer only (shell), and
 # rlm gets --no-profile + rlm only (rlm__* tools). This forces each mode to
 # actually exercise its discipline rather than fall through to shell.
 run_mode() {
   local mode="$1" q="$2" out_file="$3"
   local start end secs
-  start=$(date +%s.%N)
+  local -a base_args=(run --no-session --quiet --max-turns "$MAX_TURNS")
   if [[ "$mode" = "rlm" ]]; then
     if [[ "${ISOLATE:-0}" = "1" ]]; then
-      "$GOOSE_BIN" run --no-session --quiet --max-turns "$MAX_TURNS" \
-        --no-profile --rlm --context "$CONTEXT_PATH:$CONTEXT_NAME" \
-        -t "$q" >"$out_file" 2>&1 || true
-    else
-      "$GOOSE_BIN" run --no-session --quiet --max-turns "$MAX_TURNS" \
-        --rlm --context "$CONTEXT_PATH:$CONTEXT_NAME" \
-        -t "$q" >"$out_file" 2>&1 || true
+      base_args+=(--no-profile)
     fi
-  else
-    if [[ "${ISOLATE:-0}" = "1" ]]; then
-      "$GOOSE_BIN" run --no-session --quiet --max-turns "$MAX_TURNS" \
-        --no-profile --with-builtin developer \
-        -t "$q" >"$out_file" 2>&1 || true
-    else
-      "$GOOSE_BIN" run --no-session --quiet --max-turns "$MAX_TURNS" \
-        -t "$q" >"$out_file" 2>&1 || true
-    fi
+    base_args+=(--rlm --context "$CONTEXT_PATH:$CONTEXT_NAME")
+  elif [[ "${ISOLATE:-0}" = "1" ]]; then
+    base_args+=(--no-profile --with-builtin developer)
   fi
+
+  start=$(date +%s.%N)
+  "$GOOSE_BIN" "${base_args[@]}" -t "$q" >"$out_file" 2>&1 || true
   end=$(date +%s.%N)
+  # Second run with JSON output to capture token usage. Same args; same query.
+  "$GOOSE_BIN" "${base_args[@]}" --output-format json -t "$q" \
+    >"${out_file}.json" 2>/dev/null || true
   secs=$(awk "BEGIN{printf \"%.2f\", $end - $start}")
   printf "%s" "$secs"
 }
@@ -106,6 +109,21 @@ run_mode() {
 # Count tool invocations in goose's stdout (lines that begin with `  ▸ `).
 count_tools() {
   grep -cE "^\s*▸ " "$1" 2>/dev/null || echo 0
+}
+
+# Extract total_tokens from a goose --output-format=json file.
+total_tokens() {
+  local f="$1"
+  if [[ ! -f "$f" ]]; then echo "?"; return; fi
+  python3 -c "
+import json, sys
+try:
+  d = json.load(open('$f'))
+  m = d.get('metadata', {})
+  print(m.get('total_tokens', '?'))
+except Exception:
+  print('?')
+" 2>/dev/null
 }
 
 grade() {
@@ -122,20 +140,20 @@ grade() {
       fi
     done
     echo "PASS"
-  elif grep -E -i -q "$pattern" "$out_file"; then
+  elif grep -P -i -q "$pattern" "$out_file"; then
     echo "PASS"
   else
     echo "FAIL"
   fi
 }
 
-printf "%-50s | %-4s %-5s %-5s | %-4s %-5s %-5s\n" "question" "base" "secs" "tools" "rlm" "secs" "tools"
-printf "%-50s-+-%s-+-%s\n" "$(printf '%.0s-' {1..50})" "----------------" "----------------"
+printf "%-46s | %-4s %-5s %-5s %-7s | %-4s %-5s %-5s %-7s\n" "question" "base" "secs" "tools" "tokens" "rlm" "secs" "tools" "tokens"
+printf "%-46s-+-%s-+-%s\n" "$(printf '%.0s-' {1..46})" "------------------------" "------------------------"
 
 for i in "${!QUESTIONS[@]}"; do
   q="${QUESTIONS[$i]}"
   expected="${EXPECTED[$i]}"
-  short=$(printf '%s' "$q" | head -c 48)
+  short=$(printf '%s' "$q" | head -c 44)
 
   base_out="$BENCH_DIR/q${i}_baseline.txt"
   rlm_out="$BENCH_DIR/q${i}_rlm.txt"
@@ -143,11 +161,13 @@ for i in "${!QUESTIONS[@]}"; do
   base_secs=$(run_mode baseline "$q" "$base_out")
   base_grade=$(grade "$base_out" "$expected")
   base_tools=$(count_tools "$base_out")
+  base_tokens=$(total_tokens "${base_out}.json")
   rlm_secs=$(run_mode rlm "$q" "$rlm_out")
   rlm_grade=$(grade "$rlm_out" "$expected")
   rlm_tools=$(count_tools "$rlm_out")
+  rlm_tokens=$(total_tokens "${rlm_out}.json")
 
-  printf "%-50s | %-4s %-5s %-5s | %-4s %-5s %-5s\n" "$short" "$base_grade" "$base_secs" "$base_tools" "$rlm_grade" "$rlm_secs" "$rlm_tools"
+  printf "%-46s | %-4s %-5s %-5s %-7s | %-4s %-5s %-5s %-7s\n" "$short" "$base_grade" "$base_secs" "$base_tools" "$base_tokens" "$rlm_grade" "$rlm_secs" "$rlm_tools" "$rlm_tokens"
 done
 
 echo
