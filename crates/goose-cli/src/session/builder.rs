@@ -715,9 +715,33 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     )
     .await;
 
+    // Restore RLM state from the persisted session snapshot (memory KVs and
+    // context source paths). Done before --context so explicit CLI flags can
+    // override or supplement what was previously loaded.
+    let store = agent_ptr.extension_manager.rlm_store();
+    if session_config.resume {
+        if let Ok(prev) = session_manager.get_session(&session_id, false).await {
+            if let Some(snapshot) =
+                <goose::session::extension_data::RlmState as goose::session::extension_data::ExtensionState>::from_extension_data(&prev.extension_data)
+            {
+                let restored = store.restore(&snapshot);
+                if !restored.is_empty() {
+                    output::render_text(
+                        &format!(
+                            "rlm: restored {} context(s) and {} memory key(s) from previous session",
+                            restored.len(),
+                            snapshot.memory.len()
+                        ),
+                        None,
+                        true,
+                    );
+                }
+            }
+        }
+    }
+
     // Pre-load --context inputs into the per-session RLM store.
     if !session_config.rlm_contexts.is_empty() {
-        let store = agent_ptr.extension_manager.rlm_store();
         for spec in &session_config.rlm_contexts {
             let (path_part, name_part) = match spec.rsplit_once(':') {
                 Some((p, n)) if !n.is_empty() && !n.contains('/') => (p, Some(n.to_string())),
@@ -756,6 +780,23 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                     output::render_error(&format!("Failed to load --context {}: {}", spec, e));
                     process::exit(1);
                 }
+            }
+        }
+    }
+
+    // Persist the snapshot once after restore + --context loads so a
+    // subsequent resume sees the recorded sources, even if no rlm__store
+    // call is made later in this run.
+    if !store.list_contexts().is_empty() || !store.list_memory_keys().is_empty() {
+        let snapshot = store.snapshot();
+        if let Ok(mut sess) = session_manager.get_session(&session_id, false).await {
+            use goose::session::extension_data::ExtensionState;
+            if snapshot.to_extension_data(&mut sess.extension_data).is_ok() {
+                let _ = session_manager
+                    .update(&session_id)
+                    .extension_data(sess.extension_data)
+                    .apply()
+                    .await;
             }
         }
     }

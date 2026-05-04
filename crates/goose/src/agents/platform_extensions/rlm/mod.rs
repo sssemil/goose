@@ -332,7 +332,31 @@ impl RlmClient {
     async fn handle_store(&self, args: Option<JsonObject>) -> Result<Vec<Content>, String> {
         let p: StoreParams = Self::parse_args(args)?;
         self.store().store_memory(p.key.clone(), p.value);
+        // Best-effort persist so Ctrl-C-then-resume keeps the memory.
+        // Failures are logged but not propagated to the model.
+        if let Err(e) = self.persist_snapshot().await {
+            tracing::warn!("rlm: failed to persist snapshot after store: {}", e);
+        }
         Ok(vec![Content::text(format!("stored: {}", p.key))])
+    }
+
+    /// Snapshot the store and write it into the session's `extension_data`.
+    async fn persist_snapshot(&self) -> anyhow::Result<()> {
+        use crate::session::extension_data::ExtensionState;
+        let Some(session) = self.context.session.as_ref() else {
+            return Ok(());
+        };
+        let snapshot = self.store().snapshot();
+        let session_id = session.id.clone();
+        let manager = &self.context.session_manager;
+        let mut current = manager.get_session(&session_id, false).await?;
+        snapshot.to_extension_data(&mut current.extension_data)?;
+        manager
+            .update(&session_id)
+            .extension_data(current.extension_data)
+            .apply()
+            .await?;
+        Ok(())
     }
 
     async fn handle_retrieve(&self, args: Option<JsonObject>) -> Result<Vec<Content>, String> {

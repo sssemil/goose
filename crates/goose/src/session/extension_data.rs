@@ -81,6 +81,35 @@ pub trait ExtensionState: Sized + Serialize + for<'de> Deserialize<'de> {
     }
 }
 
+/// Recursive Language Model session state. Persists the bits we can faithfully
+/// rebuild on resume: memory KVs (cheap to round-trip) and a list of context
+/// sources (path + name + recorded bytes/tokens for sanity reporting). The
+/// blob and BM25 index are NOT serialized — they're rebuilt by re-loading the
+/// source paths so we don't double-store the data.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RlmState {
+    pub contexts: Vec<RlmContextRef>,
+    pub memory: HashMap<String, Value>,
+    pub max_depth: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RlmContextRef {
+    pub name: String,
+    /// Original on-disk source path (file or directory). On resume we reload
+    /// from here; if the path no longer exists, the context is skipped with a
+    /// warning rather than failing the resume.
+    pub source: String,
+    pub total_chars: usize,
+    pub total_tokens: usize,
+    pub n_chunks: usize,
+}
+
+impl ExtensionState for RlmState {
+    const EXTENSION_NAME: &'static str = "rlm";
+    const VERSION: &'static str = "v0";
+}
+
 /// TODO extension state implementation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TodoState {

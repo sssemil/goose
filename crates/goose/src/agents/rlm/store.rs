@@ -396,6 +396,72 @@ impl RlmStore {
         keys
     }
 
+    /// Snapshot the parts of the store that survive `goose session resume`:
+    /// memory KVs and context source paths. Blobs and BM25 indexes are not
+    /// captured — `restore` re-ingests from the recorded paths.
+    pub fn snapshot(&self) -> crate::session::extension_data::RlmState {
+        use crate::session::extension_data::{RlmContextRef, RlmState};
+        let contexts = self
+            .contexts
+            .iter()
+            .map(|entry| {
+                let ctx = entry.value();
+                RlmContextRef {
+                    name: ctx.name.clone(),
+                    source: ctx.source.clone(),
+                    total_chars: ctx.total_chars,
+                    total_tokens: ctx.total_tokens,
+                    n_chunks: ctx.chunks.len(),
+                }
+            })
+            .collect();
+        let memory: std::collections::HashMap<String, Value> = self
+            .memory
+            .iter()
+            .map(|e| (e.key().clone(), (*e.value().clone()).clone()))
+            .collect();
+        RlmState {
+            contexts,
+            memory,
+            max_depth: self.max_depth,
+        }
+    }
+
+    /// Restore from a snapshot: re-ingest each recorded context source path
+    /// (skip silently if missing) and re-insert all memory KVs. Returns the
+    /// names of contexts that could be successfully reloaded.
+    pub fn restore(&self, snapshot: &crate::session::extension_data::RlmState) -> Vec<String> {
+        let mut restored = Vec::new();
+        for ctx_ref in &snapshot.contexts {
+            let path = std::path::Path::new(&ctx_ref.source);
+            let result = if path.is_dir() {
+                self.load_directory(path, &ctx_ref.name)
+            } else if path.is_file() {
+                self.load_file(path, &ctx_ref.name)
+            } else {
+                tracing::warn!(
+                    "rlm: skipping context '{}': source path no longer exists ({})",
+                    ctx_ref.name,
+                    ctx_ref.source
+                );
+                continue;
+            };
+            match result {
+                Ok(_) => restored.push(ctx_ref.name.clone()),
+                Err(e) => tracing::warn!(
+                    "rlm: failed to restore context '{}' from {}: {}",
+                    ctx_ref.name,
+                    ctx_ref.source,
+                    e
+                ),
+            }
+        }
+        for (k, v) in &snapshot.memory {
+            self.store_memory(k.clone(), v.clone());
+        }
+        restored
+    }
+
     /// Load a single file as a context.
     pub fn load_file(&self, path: &Path, name: &str) -> Result<Arc<RlmContext>> {
         let raw = std::fs::read(path)
@@ -762,6 +828,52 @@ mod tests {
         let hits = ctx.search(r"BLUE_TOKEN_\d+", 5, SearchMode::Regex);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].preview.contains("BLUE_TOKEN_91"));
+    }
+
+    #[test]
+    fn snapshot_round_trip_preserves_memory_and_contexts() {
+        // Build a store with a context and a memory KV; snapshot it; restore
+        // into a fresh store; confirm contexts and memory survived.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, "# H\nthe quick brown fox\n").unwrap();
+        let original = RlmStore::new();
+        original.load_file(&file, "doc").unwrap();
+        original.store_memory("note", serde_json::json!({"k": "v"}));
+
+        let snap = original.snapshot();
+        assert_eq!(snap.contexts.len(), 1);
+        assert_eq!(snap.contexts[0].name, "doc");
+        assert_eq!(snap.memory.len(), 1);
+
+        let restored = RlmStore::new();
+        let names = restored.restore(&snap);
+        assert_eq!(names, vec!["doc".to_string()]);
+        assert_eq!(restored.list_contexts().len(), 1);
+        let v = restored.retrieve_memory("note").unwrap();
+        assert_eq!(v["k"], "v");
+        // Re-snapshot from restored should match the original snapshot's shape.
+        let snap2 = restored.snapshot();
+        assert_eq!(snap2.contexts.len(), snap.contexts.len());
+        assert_eq!(snap2.memory.len(), snap.memory.len());
+    }
+
+    #[test]
+    fn restore_skips_missing_source_path() {
+        // Snapshot references a path; delete it; restore should warn-and-skip
+        // rather than fail.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("doc.md");
+        std::fs::write(&file, "# H\nbody\n").unwrap();
+        let original = RlmStore::new();
+        original.load_file(&file, "doc").unwrap();
+        let snap = original.snapshot();
+
+        std::fs::remove_file(&file).unwrap();
+        let restored = RlmStore::new();
+        let names = restored.restore(&snap);
+        assert!(names.is_empty(), "missing source must be skipped");
+        assert_eq!(restored.list_contexts().len(), 0);
     }
 
     #[test]
