@@ -27,6 +27,10 @@ use serde_json::Value;
 /// Default per-session ingest cap. Override via [`RlmStore::with_max_bytes`].
 pub const DEFAULT_MAX_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
+/// Default recursion cap for `rlm__sub_query` chains. Beyond this, sub-queries
+/// fall back to a leaf LLM call with no further tools.
+pub const DEFAULT_MAX_DEPTH: u32 = 2;
+
 /// Default chunk size in approximate tokens (1 token ~= 4 chars).
 const CHUNK_TOKEN_TARGET: usize = 2_000;
 const CHUNK_OVERLAP_TOKENS: usize = 200;
@@ -331,6 +335,7 @@ pub struct RlmStore {
     memory: DashMap<String, Arc<Value>>,
     bytes_ingested: AtomicU64,
     max_bytes: u64,
+    max_depth: u32,
 }
 
 impl Default for RlmStore {
@@ -350,7 +355,17 @@ impl RlmStore {
             memory: DashMap::new(),
             bytes_ingested: AtomicU64::new(0),
             max_bytes,
+            max_depth: DEFAULT_MAX_DEPTH,
         }
+    }
+
+    pub fn with_max_depth(mut self, max_depth: u32) -> Self {
+        self.max_depth = max_depth;
+        self
+    }
+
+    pub fn max_depth(&self) -> u32 {
+        self.max_depth
     }
 
     pub fn list_contexts(&self) -> Vec<ContextSummary> {

@@ -1677,6 +1677,7 @@ mod tests {
             session_manager: Arc::new(crate::session::SessionManager::instance()),
             session: None,
             rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
+            rlm_depth: 0,
         }
     }
 

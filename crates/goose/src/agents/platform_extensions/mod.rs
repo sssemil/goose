@@ -230,6 +230,11 @@ pub struct PlatformExtensionContext {
     /// Per-session Recursive Language Model store. Always present; empty
     /// unless the user enabled RLM mode (`--rlm` / recipe `rlm:` block).
     pub rlm_store: std::sync::Arc<crate::agents::rlm::RlmStore>,
+    /// Recursion depth of the agent that owns this extension. 0 = root agent;
+    /// each `rlm__sub_query` that spawns a real sub-agent increments this in
+    /// the child's context. Used by `rlm__sub_query` to decide between a
+    /// recursive sub-agent and a leaf LLM call.
+    pub rlm_depth: u32,
 }
 
 impl PlatformExtensionContext {

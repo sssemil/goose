@@ -279,6 +279,7 @@ mod tests {
             session_manager: Arc::new(SessionManager::new(std::env::temp_dir())),
             session: None,
             rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
+            rlm_depth: 0,
         }
     }
 

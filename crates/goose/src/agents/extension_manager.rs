@@ -146,6 +146,11 @@ pub struct ExtensionManager {
     tools_cache_version: AtomicU64,
     client_name: String,
     capabilities: ExtensionManagerCapabilities,
+    /// Late-bound override for the RLM store handed to platform extensions when
+    /// they're created. Used by sub-agents to inherit the parent's per-session
+    /// store + recursion depth without rebuilding the whole context. Std mutex
+    /// because lock holds are trivially short and the call is sync.
+    rlm_overrides: std::sync::Mutex<Option<(Arc<crate::agents::rlm::RlmStore>, u32)>>,
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -695,12 +700,14 @@ impl ExtensionManager {
                 session_manager,
                 session: None,
                 rlm_store: Arc::new(crate::agents::rlm::RlmStore::new()),
+                rlm_depth: 0,
             },
             provider,
             tools_cache: Mutex::new(None),
             tools_cache_version: AtomicU64::new(0),
             client_name,
             capabilities,
+            rlm_overrides: std::sync::Mutex::new(None),
         }
     }
 
@@ -721,10 +728,23 @@ impl ExtensionManager {
         &self.context
     }
 
-    /// Per-session [`RlmStore`](crate::agents::rlm::RlmStore) handle. The CLI
-    /// uses this to pre-load contexts before the first turn when `--rlm` is set.
+    /// Per-session [`RlmStore`](crate::agents::rlm::RlmStore) handle. Returns
+    /// the override if [`set_rlm_override`](Self::set_rlm_override) has been
+    /// called (e.g. by a sub-agent inheriting from its parent), otherwise the
+    /// store created at construction.
     pub fn rlm_store(&self) -> Arc<crate::agents::rlm::RlmStore> {
+        if let Some((store, _)) = self.rlm_overrides.lock().unwrap().as_ref() {
+            return store.clone();
+        }
         self.context.rlm_store.clone()
+    }
+
+    /// Inject a parent's RLM store and recursion depth so platform extensions
+    /// created after this call see them in their `PlatformExtensionContext`.
+    /// MUST be called before the `rlm` extension is added; otherwise the
+    /// already-constructed `RlmClient` keeps its original store.
+    pub fn set_rlm_override(&self, store: Arc<crate::agents::rlm::RlmStore>, depth: u32) {
+        *self.rlm_overrides.lock().unwrap() = Some((store, depth));
     }
 
     pub fn get_provider(&self) -> &SharedProvider {
@@ -830,6 +850,10 @@ impl ExtensionManager {
                         {
                             context.session = Some(Arc::new(session));
                         }
+                    }
+                    if let Some((store, depth)) = self.rlm_overrides.lock().unwrap().as_ref() {
+                        context.rlm_store = store.clone();
+                        context.rlm_depth = *depth;
                     }
                     (def.client_factory)(context)
                 } else {
