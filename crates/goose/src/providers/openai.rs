@@ -460,13 +460,28 @@ impl OpenAiProvider {
     ];
 
     fn sanitize_request_for_compat(&self, mut payload: serde_json::Value) -> serde_json::Value {
-        if !Self::PROVIDERS_NEEDING_MAX_TOKENS_REMAP.contains(&self.name.as_str()) {
-            return payload;
+        if Self::PROVIDERS_NEEDING_MAX_TOKENS_REMAP.contains(&self.name.as_str()) {
+            if let Some(obj) = payload.as_object_mut() {
+                if let Some(value) = obj.remove("max_completion_tokens") {
+                    obj.entry("max_tokens").or_insert(value);
+                }
+            }
         }
 
-        if let Some(obj) = payload.as_object_mut() {
-            if let Some(value) = obj.remove("max_completion_tokens") {
-                obj.entry("max_tokens").or_insert(value);
+        // DeepSeek thinking-mode chat models (deepseek-v4-pro, V3.x with
+        // thinking enabled) return `reasoning_content` in responses and
+        // require thinking mode to stay enabled on every subsequent request,
+        // otherwise the API 400s as soon as prior assistant messages carry
+        // reasoning_content. Send `thinking.type=enabled` unconditionally for
+        // custom_deepseek — non-thinking DeepSeek models simply ignore it.
+        if self.name == "custom_deepseek" {
+            if let Some(obj) = payload.as_object_mut() {
+                let thinking = obj
+                    .entry("thinking")
+                    .or_insert(serde_json::json!({"type": "enabled"}));
+                if !thinking.is_object() {
+                    *thinking = serde_json::json!({"type": "enabled"});
+                }
             }
         }
 

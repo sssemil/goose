@@ -329,7 +329,15 @@ impl MessageContent {
                     metadata: res.metadata.clone(),
                 }))
             }
-            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => None,
+            // Keep thinking content for the assistant audience: providers like
+            // DeepSeek's thinking mode REQUIRE reasoning_content to be passed
+            // back on subsequent turns (otherwise they 400). Strip for any
+            // other audience (e.g. user-facing log display chooses what to
+            // surface independently).
+            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => match audience {
+                Role::Assistant => Some(self.clone()),
+                _ => None,
+            },
             _ => Some(self.clone()),
         }
     }
