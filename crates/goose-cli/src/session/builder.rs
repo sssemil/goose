@@ -726,14 +726,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             {
                 let restored = store.restore(&snapshot);
                 if !restored.is_empty() {
-                    output::render_text(
-                        &format!(
-                            "rlm: restored {} context(s) and {} memory key(s) from previous session",
-                            restored.len(),
-                            snapshot.memory.len()
-                        ),
-                        None,
-                        true,
+                    // To stderr so --output-format=json stays parseable.
+                    eprintln!(
+                        "rlm: restored {} context(s) and {} memory key(s) from previous session",
+                        restored.len(),
+                        snapshot.memory.len()
                     );
                 }
             }
@@ -767,13 +764,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             match result {
                 Ok(ctx) => {
                     let s = ctx.summary();
-                    output::render_text(
-                        &format!(
-                            "rlm: loaded context '{}' ({} chunks, ~{} tokens, source {})",
-                            s.name, s.n_chunks, s.total_tokens, s.source
-                        ),
-                        None,
-                        false,
+                    // To stderr so --output-format=json stays parseable.
+                    eprintln!(
+                        "rlm: loaded context '{}' ({} chunks, ~{} tokens, source {})",
+                        s.name, s.n_chunks, s.total_tokens, s.source
                     );
                 }
                 Err(e) => {
