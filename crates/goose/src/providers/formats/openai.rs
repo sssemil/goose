@@ -331,12 +331,18 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
         }
 
         // Some strict OpenAI-compatible providers require "content" to be present
-        // (even as null) when tool_calls are provided. See #6717.
+        // when tool_calls are provided. See #6717.
+        // DeepSeek thinking mode additionally rejects content=null when reasoning_content
+        // is present, so we use "" instead of null whenever reasoning is being sent back.
         if message.role == Role::Assistant
             && converted.get("tool_calls").is_some()
             && converted.get("content").is_none()
         {
-            converted["content"] = json!(null);
+            converted["content"] = if reasoning_text.is_empty() {
+                json!(null)
+            } else {
+                json!("")
+            };
         }
 
         // Include reasoning_content only when non-empty.
@@ -2178,6 +2184,43 @@ data: [DONE]"#;
             panic!("Expected Text content");
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_messages_tool_call_with_reasoning_uses_empty_content() -> anyhow::Result<()> {
+        // DeepSeek thinking mode rejects content=null on assistant tool_call messages
+        // when reasoning_content is also present; it requires content="" instead.
+        let message = Message::assistant()
+            .with_content(MessageContent::thinking("planning the call", ""))
+            .with_tool_request(
+                "tool1",
+                Ok(rmcp::model::CallToolRequestParams::new("test_tool")
+                    .with_arguments(rmcp::object!({}))),
+            );
+
+        let spec = format_messages(&[message], &ImageFormat::OpenAi);
+        assert_eq!(spec.len(), 1);
+        assert_eq!(spec[0]["role"], "assistant");
+        assert_eq!(spec[0]["content"], json!(""));
+        assert_eq!(spec[0]["reasoning_content"], "planning the call");
+        assert!(spec[0]["tool_calls"].is_array());
+        Ok(())
+    }
+
+    #[test]
+    fn test_format_messages_tool_call_without_reasoning_keeps_null_content() -> anyhow::Result<()> {
+        // No reasoning → preserve the existing null-content behavior for #6717 providers.
+        let message = Message::assistant().with_tool_request(
+            "tool1",
+            Ok(rmcp::model::CallToolRequestParams::new("test_tool")
+                .with_arguments(rmcp::object!({}))),
+        );
+
+        let spec = format_messages(&[message], &ImageFormat::OpenAi);
+        assert_eq!(spec.len(), 1);
+        assert_eq!(spec[0]["content"], json!(null));
+        assert!(spec[0].get("reasoning_content").is_none());
         Ok(())
     }
 
